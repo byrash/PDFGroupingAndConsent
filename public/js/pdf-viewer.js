@@ -45,6 +45,7 @@ let totalPages = 0;
 let pdfPages = [];
 let observer = null;
 let loadedPages = new Set();
+let pdfCache = {}; // Cache for loaded PDF documents
 
 // Group variables
 let pdfGroups = [];
@@ -175,6 +176,9 @@ async function loadGroup(groupIndex) {
         // Create PDF file sections for this group
         createGroupStructure(group);
 
+        // Preload PDFs in the background (just metadata, not rendering)
+        preloadGroupPdfs(group);
+
         // Hide loader
         pdfLoader.classList.add('hidden');
 
@@ -244,11 +248,20 @@ function createGroupStructure(group) {
 // Load a specific PDF file
 async function loadPdfFile(file) {
     try {
-        // Get PDF info without loading all pages
-        const loadingTask = pdfjsLib.getDocument(file.url);
+        // Check if we've already loaded this PDF
+        if (!pdfCache[file.url]) {
+            // Get PDF info without loading all pages
+            console.log(`Loading PDF from URL: ${file.url}`);
+            const loadingTask = pdfjsLib.getDocument(file.url);
 
-        // Just get PDF info first without rendering pages
-        const pdf = await loadingTask.promise;
+            // Store the loading task in the cache
+            pdfCache[file.url] = loadingTask.promise;
+        } else {
+            console.log(`Using cached PDF for: ${file.url}`);
+        }
+
+        // Get PDF from cache or load it
+        const pdf = await pdfCache[file.url];
         const pdfContainer = document.getElementById(`pdf-container-${file.id}`);
 
         // Create placeholders for all pages
@@ -294,8 +307,16 @@ async function renderPage(fileId, pageNumber) {
         }
         const url = file.url;
 
-        // Load the document on-demand
-        const pdf = await pdfjsLib.getDocument(url).promise;
+        // Use cached PDF document if available, otherwise load it
+        if (!pdfCache[url]) {
+            console.log(`Loading PDF for rendering: ${url}`);
+            pdfCache[url] = pdfjsLib.getDocument(url).promise;
+        } else {
+            console.log(`Using cached PDF for rendering: ${url}`);
+        }
+
+        // Get the PDF from cache
+        const pdf = await pdfCache[url];
 
         // Get the page
         const page = await pdf.getPage(pageNumber);
@@ -348,6 +369,8 @@ function resetPdfViewer() {
     totalPages = 0;
     pdfPages = [];
     loadedPages = new Set();
+    // Don't clear the PDF cache between group changes
+    // This allows us to reuse already loaded PDFs
 }
 
 // These page navigation functions are kept for reference but are no longer used
@@ -561,6 +584,7 @@ function showConsentConfirmation() {
             },
             body: JSON.stringify({
                 consentType: 'final',
+                groupName: 'All Groups',
                 consented: true,
                 timestamp: timestamp,
                 groups: Array.from(viewedGroups),
@@ -582,6 +606,18 @@ function showConsentConfirmation() {
         nextGroupBtn.disabled = true;
         nextGroupBtn.textContent = 'Signed';
     }
+}
+
+// Preload PDFs for the current group to improve performance
+function preloadGroupPdfs(group) {
+    // Start preloading all PDFs in the group in the background
+    group.files.forEach((file) => {
+        if (!pdfCache[file.url]) {
+            // Use a lower priority for preloading
+            console.log(`Preloading PDF: ${file.url}`);
+            pdfCache[file.url] = pdfjsLib.getDocument(file.url).promise;
+        }
+    });
 }
 
 // Initialize the app when the page loads

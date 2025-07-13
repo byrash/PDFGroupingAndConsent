@@ -98,27 +98,14 @@ app.post('/api/consent', (req, res) => {
     try {
         const consentData = req.body;
         const timestamp = new Date().toISOString();
+        const groupName = consentData.groupName || 'Unknown Group';
 
-        // Log the consent data
-        console.log(`Consent recorded at ${timestamp}:`, consentData);
-
-        // In a real application, you would store this in a database
-        // For now, we'll write it to a file
-        const consentLogDir = path.join(__dirname, 'consent_logs');
-
-        // Ensure the consent logs directory exists
-        if (!fs.existsSync(consentLogDir)) {
-            fs.mkdirSync(consentLogDir, { recursive: true });
-        }
-
-        const logFileName = `consent_${timestamp.replace(/[:.]/g, '-')}.json`;
-        const logFilePath = path.join(consentLogDir, logFileName);
-
-        // Write consent data to file
-        fs.writeFileSync(logFilePath, JSON.stringify({ ...consentData, serverTimestamp: timestamp }, null, 2));
+        // Log the consent data with group information
+        console.log(`Group "${groupName}" acknowledged consent at ${timestamp}`);
+        console.log('Consent details:', consentData);
 
         res.status(200).json({
-            message: 'Consent recorded successfully',
+            message: `Consent recorded successfully for ${groupName}`,
             timestamp: timestamp,
         });
     } catch (error) {
