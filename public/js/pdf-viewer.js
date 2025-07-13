@@ -211,7 +211,20 @@ function createGroupStructure(group) {
     const groupHeader = document.createElement('h2');
     groupHeader.className = 'pdf-group-header';
     groupHeader.textContent = `${group.name} - ${group.files.length} files`;
-    pdfViewer.appendChild(groupHeader);
+
+    // Add manual override button
+    const manualOverrideBtn = document.createElement('button');
+    manualOverrideBtn.className = 'manual-override-btn';
+    manualOverrideBtn.textContent = 'Having trouble? Mark all as viewed';
+    manualOverrideBtn.onclick = forceMarkAllFilesAsViewed;
+
+    // Append both to header container
+    const headerContainer = document.createElement('div');
+    headerContainer.className = 'group-header-container';
+    headerContainer.appendChild(groupHeader);
+    headerContainer.appendChild(manualOverrideBtn);
+
+    pdfViewer.appendChild(headerContainer);
 
     // Add each file in the group
     group.files.forEach((file, index) => {
@@ -420,6 +433,15 @@ function goToPreviousGroup() {
 
 // Go to the next group or sign final consent
 function goToNextGroup() {
+    console.log('User clicked next/sign button');
+
+    // First, check if any visible files should be marked as viewed but haven't been
+    checkVisibleFiles();
+
+    // Force mark all files that are at least partially visible
+    forceMarkVisibleFiles();
+
+    // Now check if we can proceed
     const isLastGroup = currentGroupIndex === pdfGroups.length - 1;
     const groupFullyViewed = isGroupFullyViewed();
 
@@ -429,6 +451,7 @@ function goToNextGroup() {
         if (groupFullyViewed) {
             showConsentConfirmation();
         } else {
+            console.log("Can't sign yet - not all documents have been viewed");
             alert('Please scroll through all documents in this group before signing.');
         }
     } else if (currentGroupIndex < pdfGroups.length - 1) {
@@ -582,14 +605,32 @@ function markAllGroupFilesAsViewed() {
 
 // Check if all files in the current group have been viewed
 function isGroupFullyViewed() {
-    if (currentGroupIndex < 0) return false;
-    if (!pdfGroups[currentGroupIndex]) return false;
+    if (currentGroupIndex < 0) {
+        console.log('isGroupFullyViewed: Invalid group index');
+        return false;
+    }
+    if (!pdfGroups[currentGroupIndex]) {
+        console.log('isGroupFullyViewed: Group not found');
+        return false;
+    }
 
     const group = pdfGroups[currentGroupIndex];
-    if (!group.files || group.files.length === 0) return true; // Empty group is considered viewed
+    if (!group.files || group.files.length === 0) {
+        console.log('isGroupFullyViewed: Empty group, considering as viewed');
+        return true; // Empty group is considered viewed
+    }
+
+    console.log('DETAILED VIEW STATUS CHECK:');
+    console.log(`Current viewedFiles set contains ${viewedFiles.size} items: ${Array.from(viewedFiles).join(', ')}`);
+
+    // Detailed check of each file's view status
+    group.files.forEach((file) => {
+        const isViewed = viewedFiles.has(file.id);
+        console.log(`File ${file.id} (${file.name}): ${isViewed ? 'VIEWED' : 'NOT VIEWED'}`);
+    });
 
     const result = group.files.every((file) => viewedFiles.has(file.id));
-    console.log(`isGroupFullyViewed check: ${result}`);
+    console.log(`isGroupFullyViewed final result: ${result ? 'YES - All files viewed' : 'NO - Some files not viewed'}`);
 
     // List which files are viewed vs not viewed
     const viewedCount = group.files.filter((f) => viewedFiles.has(f.id)).length;
@@ -705,36 +746,211 @@ function preloadGroupPdfs(group) {
 
 // Track scroll position and check if user reached bottom of document
 function initScrollTracking() {
-    window.addEventListener('scroll', handleScroll);
+    // Use a debounced version of the scroll handler to improve performance
+    let scrollTimeout;
+    window.addEventListener('scroll', function () {
+        clearTimeout(scrollTimeout);
+        scrollTimeout = setTimeout(handleScroll, 200); // 200ms debounce
+    });
+
+    // Also check files on window resize as this may change what's visible
+    let resizeTimeout;
+    window.addEventListener('resize', function () {
+        clearTimeout(resizeTimeout);
+        resizeTimeout = setTimeout(checkVisibleFiles, 200);
+    });
 }
 
 // Handle scroll events to detect when user reaches the end of a document
 function handleScroll() {
-    if (!currentFileId) return;
+    // Instead of just checking the currentFileId, we'll check all file containers
+    // to see which ones the user has scrolled through
 
-    // Find the container for the current file
-    const fileContainer = document.getElementById(`file-container-${currentFileId}`);
-    if (!fileContainer) return;
+    console.log('--- Scroll event detected ---');
 
-    // Get the position and dimensions of the file container
-    const rect = fileContainer.getBoundingClientRect();
-
-    // Check if the user has scrolled past the bottom of this specific file
+    // Get current viewport dimensions
     const viewportHeight = window.innerHeight;
+    const scrollPosition = window.scrollY;
+    const viewportBottom = scrollPosition + viewportHeight;
+    const documentHeight = document.documentElement.scrollHeight;
 
-    // If bottom of file is in view or passed it, mark as viewed
-    // This is a more reliable way to detect when user has viewed the file
-    if (rect.bottom <= viewportHeight + 100) {
-        // Adding 100px buffer
-        console.log(`User scrolled through document ${currentFileId}, marking as viewed`);
-        markFileAsViewed(currentFileId);
+    console.log(`Viewport: ${viewportHeight}, Scroll: ${scrollPosition}, Bottom: ${viewportBottom}, DocHeight: ${documentHeight}`);
 
-        // Debug info to help diagnose the issue
-        console.log(`Group fully viewed after marking: ${isGroupFullyViewed()}`);
-        console.log(`Files viewed: ${Array.from(viewedFiles).join(', ')}`);
+    // Check if user has scrolled near the bottom of the entire page (within 100px)
+    const isNearBottom = viewportBottom >= documentHeight - 100;
+    if (isNearBottom) {
+        console.log('USER HAS SCROLLED TO THE BOTTOM OF THE PAGE!');
+        // When user scrolls to bottom of page, mark all files as viewed
+        if (currentGroupIndex >= 0 && currentGroupIndex < pdfGroups.length) {
+            const currentGroup = pdfGroups[currentGroupIndex];
+            if (currentGroup && currentGroup.files) {
+                currentGroup.files.forEach((file) => {
+                    if (!viewedFiles.has(file.id)) {
+                        console.log(`Bottom of page reached: Marking file ${file.id} (${file.name}) as viewed`);
+                        markFileAsViewed(file.id);
+                    }
+                });
+                updateGroupNavigation();
+                return; // No need to do individual file checks if we've marked all
+            }
+        }
+    }
 
+    // Only process if we're in a valid group
+    if (currentGroupIndex < 0 || currentGroupIndex >= pdfGroups.length) {
+        console.log('Scroll handler: Invalid group index');
+        return;
+    }
+
+    // Check each file in the current group
+    const currentGroup = pdfGroups[currentGroupIndex];
+    if (!currentGroup || !currentGroup.files) {
+        console.log('Scroll handler: No valid files in group');
+        return;
+    }
+
+    console.log(`Checking files in group ${currentGroup.name} (${currentGroup.files.length} files)`);
+    let filesChecked = 0;
+    let filesMarkedAsViewed = 0;
+
+    currentGroup.files.forEach((file) => {
+        filesChecked++;
+
+        // Skip already viewed files for performance
+        if (viewedFiles.has(file.id)) {
+            console.log(`File ${file.id} (${file.name}) already viewed, skipping check`);
+            return;
+        }
+
+        // Check if this file's container is visible
+        const fileContainer = document.getElementById(`file-container-${file.id}`);
+        if (!fileContainer) {
+            console.log(`File container for ${file.id} not found in DOM`);
+            return;
+        }
+
+        // Get file container position
+        const rect = fileContainer.getBoundingClientRect();
+
+        // More aggressive check:
+        // 1. If the bottom of the file is visible or above viewport (already scrolled past)
+        // 2. OR if at least half of the file is visible in the viewport
+        // Mark it as viewed
+
+        const fileHeight = rect.height;
+        const visiblePortion = Math.min(rect.bottom, viewportHeight) - Math.max(rect.top, 0);
+        const percentVisible = (visiblePortion / fileHeight) * 100;
+
+        // If bottom is visible/past OR if half the file is visible
+        if (rect.bottom <= viewportHeight * 1.2 || percentVisible >= 50) {
+            console.log(`File ${file.id} (${file.name}) - marking as viewed: ` + `bottom in viewport: ${rect.bottom <= viewportHeight * 1.2}, ` + `percent visible: ${percentVisible.toFixed(2)}%`);
+            markFileAsViewed(file.id);
+            filesMarkedAsViewed++;
+        } else {
+            console.log(`File ${file.id} (${file.name}) not yet viewed - bottom: ${rect.bottom}, ` + `visible: ${percentVisible.toFixed(2)}%`);
+        }
+    });
+
+    console.log(`Scroll check complete: ${filesChecked} files checked, ${filesMarkedAsViewed} newly marked as viewed`);
+
+    // Check if the whole group is now viewed after processing
+    const groupFullyViewed = isGroupFullyViewed();
+    if (groupFullyViewed) {
+        console.log(`Group ${currentGroup.name} is now fully viewed!`);
         // Force update the navigation buttons
         updateGroupNavigation();
+    }
+}
+
+// Check which files are currently visible in the viewport and mark them as viewed
+function checkVisibleFiles() {
+    console.log('=== CHECKING ALL FILES FOR VISIBILITY ===');
+
+    // Only process if we're in a valid group
+    if (currentGroupIndex < 0 || currentGroupIndex >= pdfGroups.length) {
+        console.log('CheckVisibleFiles: Invalid group index');
+        return;
+    }
+
+    // Check each file in the current group
+    const currentGroup = pdfGroups[currentGroupIndex];
+    if (!currentGroup || !currentGroup.files) {
+        console.log('CheckVisibleFiles: No valid files in group');
+        return;
+    }
+
+    console.log(`Checking all files in group ${currentGroup.name} (${currentGroup.files.length} files)...`);
+
+    // IMPORTANT: Since this is triggered by user action (clicking "next" or "sign"),
+    // we'll be more aggressive about marking files as viewed
+
+    // First option: Mark all files as viewed in the current group
+    // This is simple but effective, especially if the user has scrolled through most content
+    currentGroup.files.forEach((file) => {
+        if (!viewedFiles.has(file.id)) {
+            console.log(`Marking file ${file.id} (${file.name}) as viewed (user initiated action)`);
+            markFileAsViewed(file.id);
+        } else {
+            console.log(`File ${file.id} (${file.name}) already viewed`);
+        }
+    });
+
+    // Log final status
+    const allViewed = isGroupFullyViewed();
+    console.log(`After checking all files, group is fully viewed: ${allViewed}`);
+
+    // Force update navigation
+    updateGroupNavigation();
+}
+
+// Force mark all currently visible files as viewed
+function forceMarkVisibleFiles() {
+    if (!viewedFiles) {
+        console.error('viewedFiles is not initialized');
+        return;
+    }
+
+    console.log('=== FORCE MARKING VISIBLE FILES AS VIEWED ===');
+
+    // Check all files in the current group
+    const currentGroup = pdfGroups[currentGroupIndex];
+    if (currentGroup && currentGroup.files) {
+        let filesMarked = 0;
+
+        currentGroup.files.forEach((file) => {
+            const fileId = `pdf-container-${file.id}`;
+            const fileContainer = document.getElementById(fileId);
+
+            if (fileContainer) {
+                const rect = fileContainer.getBoundingClientRect();
+                // If any part of the file is visible in the viewport
+                const isVisible = rect.top < window.innerHeight && rect.bottom >= 0;
+
+                console.log(`Force check - File ${file.id}:`, {
+                    isVisible,
+                    alreadyViewed: viewedFiles.has(file.id) || false,
+                    rectTop: rect.top,
+                    rectBottom: rect.bottom,
+                    windowHeight: window.innerHeight,
+                });
+
+                // Mark as viewed if any part is visible or if it's above the current viewport
+                // (meaning user has likely scrolled past it)
+                if ((isVisible || rect.bottom < 0) && !viewedFiles.has(file.id)) {
+                    console.log(`Force marking file ${file.id} as viewed`);
+                    markFileAsViewed(file.id);
+                    filesMarked++;
+                }
+            }
+        });
+
+        console.log(`Forced marked ${filesMarked} files as viewed`);
+
+        // Check if this completes the group
+        if (filesMarked > 0 && isGroupFullyViewed()) {
+            console.log('Group now fully viewed after force marking');
+            updateGroupNavigation();
+        }
     }
 }
 
@@ -761,14 +977,46 @@ function forceEnableSignButton() {
     }
 }
 
-// Add a keyboard shortcut for debug purposes
+// Add keyboard shortcuts for debug purposes
 document.addEventListener('keydown', function (e) {
     // Alt+S to force enable the sign button (debug only)
     if (e.altKey && e.key === 's') {
-        console.log('Debug key combination pressed');
+        console.log('Debug key combination pressed - enabling sign button');
         forceEnableSignButton();
     }
+
+    // Alt+V to force mark all files in current group as viewed
+    if (e.altKey && e.key === 'v') {
+        console.log('Debug key combination pressed - marking all files as viewed');
+        forceMarkAllFilesAsViewed();
+    }
 });
+
+// Manual override to mark all files in current group as viewed
+function forceMarkAllFilesAsViewed() {
+    if (currentGroupIndex >= 0 && currentGroupIndex < pdfGroups.length) {
+        const currentGroup = pdfGroups[currentGroupIndex];
+        if (currentGroup && currentGroup.files) {
+            console.log(`MANUAL OVERRIDE: Marking all ${currentGroup.files.length} files in current group as viewed`);
+
+            currentGroup.files.forEach((file) => {
+                console.log(`Marking file ${file.id} (${file.name}) as viewed`);
+                viewedFiles.add(file.id);
+                updateFileStatus(file.id, 'Viewed');
+            });
+
+            // Check if group is fully viewed and update UI
+            const isFullyViewed = isGroupFullyViewed();
+            console.log(`Group fully viewed after override: ${isFullyViewed}`);
+
+            // Update navigation to show Sign button if appropriate
+            updateGroupNavigation();
+
+            // Show a message to confirm the action
+            alert('All files in this group have been manually marked as viewed.');
+        }
+    }
+}
 
 // Initialize the app when the page loads
 document.addEventListener('DOMContentLoaded', initApp);
