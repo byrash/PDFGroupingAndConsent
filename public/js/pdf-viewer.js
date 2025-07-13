@@ -300,6 +300,7 @@ async function renderPage(fileId, pageNumber) {
     try {
         // Update the current file being viewed
         currentFileId = fileId;
+        console.log(`Now viewing file: ${fileId}, page: ${pageNumber}`);
 
         // Show loading indicator
         const pageContainer = document.getElementById(`page-${fileId}-${pageNumber}`);
@@ -353,7 +354,9 @@ async function renderPage(fileId, pageNumber) {
         const totalPages = pdf.numPages;
         if (pageNumber === totalPages) {
             console.log(`Rendered all pages of document ${fileId}, waiting for user to scroll to end`);
-            // We'll mark as viewed only after scrolling to the end
+            // We'll mark as viewed only after scrolling to end or when navigating away
+            // Set the current file ID so it can be picked up by the scroll handler
+            currentFileId = fileId;
         }
     } catch (error) {
         console.error(`Error rendering page ${pageNumber} of file ${fileId}:`, error);
@@ -417,12 +420,17 @@ function goToPreviousGroup() {
 
 // Go to the next group or sign final consent
 function goToNextGroup() {
-    // Check if this is the last group and all groups are viewed (in "Sign" mode)
-    const allGroupsViewed = pdfGroups.length > 0 && viewedGroups.size >= pdfGroups.length;
+    const isLastGroup = currentGroupIndex === pdfGroups.length - 1;
+    const groupFullyViewed = isGroupFullyViewed();
 
-    if (allGroupsViewed && currentGroupIndex === pdfGroups.length - 1) {
-        // In "Sign" mode - show consent confirmation
-        showConsentConfirmation();
+    // For the final group, require that all files be viewed before signing
+    if (isLastGroup) {
+        // Only allow signing if all files in the group have been viewed
+        if (groupFullyViewed) {
+            showConsentConfirmation();
+        } else {
+            alert('Please scroll through all documents in this group before signing.');
+        }
     } else if (currentGroupIndex < pdfGroups.length - 1) {
         // Record the group consent
         const timestamp = new Date().toISOString();
@@ -518,28 +526,76 @@ function updateFileStatus(fileId, status) {
 
 // Mark a file as viewed
 function markFileAsViewed(fileId) {
+    // Don't do anything if already viewed
+    if (viewedFiles.has(fileId)) {
+        console.log(`File ${fileId} was already marked as viewed`);
+        return;
+    }
+
+    console.log(`Marking file ${fileId} as viewed`);
     viewedFiles.add(fileId);
 
     // Update file status indicator
     updateFileStatus(fileId, 'Viewed');
 
+    // Log current status
+    console.log(`viewedFiles now contains ${viewedFiles.size} items`);
+
+    try {
+        // Get file info for better logging
+        const fileInfo = pdfGroups.flatMap((g) => g.files).find((f) => f.id === fileId);
+        if (fileInfo) {
+            console.log(`Marked "${fileInfo.name}" (ID: ${fileId}) as viewed`);
+        }
+    } catch (err) {
+        console.error('Error getting file info:', err);
+    }
+
     // Check if all files in the current group are viewed
     if (isGroupFullyViewed()) {
         viewedGroups.add(currentGroupIndex);
-        // Don't auto-advance to next group - let the user navigate manually
-        console.log('All files in group viewed. Ready for manual navigation.');
+
+        // If this is the final group, show a message about signing being available
+        if (currentGroupIndex === pdfGroups.length - 1) {
+            console.log('All files in final group viewed. Sign button is now available.');
+        } else {
+            console.log('All files in group viewed. Ready for manual navigation.');
+        }
     }
 
-    // Update navigation
+    // Update navigation - this will enable the Sign button if in the last group
+    // and all files have been viewed
     updateGroupNavigation();
+}
+
+// Mark all files in the current group as viewed (for Sign action)
+function markAllGroupFilesAsViewed() {
+    if (currentGroupIndex < 0 || currentGroupIndex >= pdfGroups.length) return;
+
+    const group = pdfGroups[currentGroupIndex];
+    group.files.forEach((file) => {
+        markFileAsViewed(file.id);
+    });
+
+    console.log(`All files in group ${pdfGroups[currentGroupIndex].name} marked as viewed`);
 }
 
 // Check if all files in the current group have been viewed
 function isGroupFullyViewed() {
     if (currentGroupIndex < 0) return false;
+    if (!pdfGroups[currentGroupIndex]) return false;
 
     const group = pdfGroups[currentGroupIndex];
-    return group.files.every((file) => viewedFiles.has(file.id));
+    if (!group.files || group.files.length === 0) return true; // Empty group is considered viewed
+
+    const result = group.files.every((file) => viewedFiles.has(file.id));
+    console.log(`isGroupFullyViewed check: ${result}`);
+
+    // List which files are viewed vs not viewed
+    const viewedCount = group.files.filter((f) => viewedFiles.has(f.id)).length;
+    console.log(`Files viewed in current group: ${viewedCount}/${group.files.length}`);
+
+    return result;
 }
 
 // Update the group progress indicator
@@ -553,16 +609,38 @@ function updateGroupProgress() {
 function updateGroupNavigation() {
     prevGroupBtn.disabled = currentGroupIndex <= 0;
 
-    // Check if all groups have been viewed
-    const allGroupsViewed = pdfGroups.length > 0 && viewedGroups.size >= pdfGroups.length;
+    // Check if we're on the last group
+    const isLastGroup = currentGroupIndex === pdfGroups.length - 1;
+    const groupFullyViewed = isGroupFullyViewed();
 
-    if (allGroupsViewed && currentGroupIndex === pdfGroups.length - 1) {
-        // On the last group and all groups are viewed - change to "Sign" button
+    // Debug information to help diagnose the issue
+    if (isLastGroup) {
+        console.log('Last group navigation update:');
+        console.log(`- Group fully viewed: ${groupFullyViewed}`);
+        console.log(`- Files in group: ${pdfGroups[currentGroupIndex].files.length}`);
+        console.log(`- Files viewed: ${Array.from(viewedFiles).length}`);
+
+        if (!groupFullyViewed) {
+            // Debug which files are not viewed
+            const notViewedFiles = pdfGroups[currentGroupIndex].files.filter((f) => !viewedFiles.has(f.id));
+            console.log(`- Files not viewed: ${notViewedFiles.map((f) => f.name).join(', ')}`);
+        }
+    }
+
+    if (isLastGroup && groupFullyViewed) {
+        // On the last group AND it's been fully viewed - show the Sign button
+        console.log('ENABLING SIGN BUTTON - All files viewed!');
         nextGroupBtn.textContent = 'Sign';
         nextGroupBtn.classList.add('sign-button');
         nextGroupBtn.disabled = false;
+    } else if (isLastGroup) {
+        // On last group but not fully viewed - show disabled button with informative text
+        console.log('Sign button still disabled - not all files viewed');
+        nextGroupBtn.textContent = 'View All Documents to Sign';
+        nextGroupBtn.classList.add('sign-button');
+        nextGroupBtn.disabled = true;
     } else {
-        // Normal navigation state
+        // Normal navigation state for non-last groups
         if (nextGroupBtn.textContent !== 'Consent & Go to Next Group') {
             nextGroupBtn.textContent = 'Consent & Go to Next Group';
             nextGroupBtn.classList.remove('sign-button');
@@ -634,21 +712,63 @@ function initScrollTracking() {
 function handleScroll() {
     if (!currentFileId) return;
 
-    // Check if we've reached near the bottom of the page
-    // We consider "near bottom" as 90% scrolled down
-    const scrollPosition = window.scrollY + window.innerHeight;
-    const totalHeight = document.body.scrollHeight;
-    const scrollPercentage = (scrollPosition / totalHeight) * 100;
+    // Find the container for the current file
+    const fileContainer = document.getElementById(`file-container-${currentFileId}`);
+    if (!fileContainer) return;
 
-    if (scrollPercentage > 90) {
-        console.log(`User scrolled to end of document ${currentFileId} (${scrollPercentage.toFixed(1)}%)`);
+    // Get the position and dimensions of the file container
+    const rect = fileContainer.getBoundingClientRect();
+
+    // Check if the user has scrolled past the bottom of this specific file
+    const viewportHeight = window.innerHeight;
+
+    // If bottom of file is in view or passed it, mark as viewed
+    // This is a more reliable way to detect when user has viewed the file
+    if (rect.bottom <= viewportHeight + 100) {
+        // Adding 100px buffer
+        console.log(`User scrolled through document ${currentFileId}, marking as viewed`);
         markFileAsViewed(currentFileId);
 
-        // Optional: Remove the scroll event listener once the document has been viewed
-        // to prevent triggering it multiple times for the same document
-        // window.removeEventListener('scroll', handleScroll);
+        // Debug info to help diagnose the issue
+        console.log(`Group fully viewed after marking: ${isGroupFullyViewed()}`);
+        console.log(`Files viewed: ${Array.from(viewedFiles).join(', ')}`);
+
+        // Force update the navigation buttons
+        updateGroupNavigation();
     }
 }
+
+// Debug function to force sign button to appear (temporary)
+function forceEnableSignButton() {
+    console.log('FORCE ENABLING SIGN BUTTON');
+
+    // Mark all files in the current group as viewed
+    if (currentGroupIndex >= 0 && currentGroupIndex < pdfGroups.length) {
+        const group = pdfGroups[currentGroupIndex];
+        group.files.forEach((file) => {
+            console.log(`Marking file ${file.id} (${file.name}) as viewed`);
+            viewedFiles.add(file.id);
+            updateFileStatus(file.id, 'Viewed');
+        });
+
+        // Mark group as viewed
+        viewedGroups.add(currentGroupIndex);
+
+        // Update navigation
+        updateGroupNavigation();
+
+        console.log('Sign button should now be enabled');
+    }
+}
+
+// Add a keyboard shortcut for debug purposes
+document.addEventListener('keydown', function (e) {
+    // Alt+S to force enable the sign button (debug only)
+    if (e.altKey && e.key === 's') {
+        console.log('Debug key combination pressed');
+        forceEnableSignButton();
+    }
+});
 
 // Initialize the app when the page loads
 document.addEventListener('DOMContentLoaded', initApp);
