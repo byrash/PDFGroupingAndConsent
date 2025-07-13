@@ -46,6 +46,7 @@ let pdfPages = [];
 let observer = null;
 let loadedPages = new Set();
 let pdfCache = {}; // Cache for loaded PDF documents
+let currentFileId = null; // Track which file is currently being viewed
 
 // Group variables
 let pdfGroups = [];
@@ -107,6 +108,9 @@ async function initApp() {
 
         // Set up intersection observer for lazy loading
         setupIntersectionObserver();
+
+        // Set up scroll tracking to detect when user reaches end of document
+        initScrollTracking();
 
         // Load the first group if available
         if (pdfGroups.length > 0) {
@@ -294,6 +298,9 @@ async function loadPdfFile(file) {
 // Render a specific page of a PDF
 async function renderPage(fileId, pageNumber) {
     try {
+        // Update the current file being viewed
+        currentFileId = fileId;
+
         // Show loading indicator
         const pageContainer = document.getElementById(`page-${fileId}-${pageNumber}`);
         if (!pageContainer) return;
@@ -342,13 +349,11 @@ async function renderPage(fileId, pageNumber) {
         // Add the canvas to the container
         pageContainer.appendChild(canvas);
 
-        // Mark this page as viewed - this is important for tracking progress
-        markFileAsViewed(fileId);
-
         // Check if this is the last page of this document
         const totalPages = pdf.numPages;
         if (pageNumber === totalPages) {
-            console.log(`Completed viewing all pages of document ${fileId}`);
+            console.log(`Rendered all pages of document ${fileId}, waiting for user to scroll to end`);
+            // We'll mark as viewed only after scrolling to the end
         }
     } catch (error) {
         console.error(`Error rendering page ${pageNumber} of file ${fileId}:`, error);
@@ -618,6 +623,31 @@ function preloadGroupPdfs(group) {
             pdfCache[file.url] = pdfjsLib.getDocument(file.url).promise;
         }
     });
+}
+
+// Track scroll position and check if user reached bottom of document
+function initScrollTracking() {
+    window.addEventListener('scroll', handleScroll);
+}
+
+// Handle scroll events to detect when user reaches the end of a document
+function handleScroll() {
+    if (!currentFileId) return;
+
+    // Check if we've reached near the bottom of the page
+    // We consider "near bottom" as 90% scrolled down
+    const scrollPosition = window.scrollY + window.innerHeight;
+    const totalHeight = document.body.scrollHeight;
+    const scrollPercentage = (scrollPosition / totalHeight) * 100;
+
+    if (scrollPercentage > 90) {
+        console.log(`User scrolled to end of document ${currentFileId} (${scrollPercentage.toFixed(1)}%)`);
+        markFileAsViewed(currentFileId);
+
+        // Optional: Remove the scroll event listener once the document has been viewed
+        // to prevent triggering it multiple times for the same document
+        // window.removeEventListener('scroll', handleScroll);
+    }
 }
 
 // Initialize the app when the page loads
