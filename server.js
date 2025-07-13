@@ -1,134 +1,133 @@
 const express = require('express');
+const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
-const cors = require('cors');
 const morgan = require('morgan');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Ensure the pdfs directory exists
+const pdfDir = path.join(__dirname, 'pdfs');
+if (!fs.existsSync(pdfDir)) {
+    console.log(`Creating pdfs directory: ${pdfDir}`);
+    fs.mkdirSync(pdfDir, { recursive: true });
+}
+
+// PDF grouping configuration
+const pdfGroups = {
+    'Group 1': ['1.pdf', '2.pdf'],
+    'Group 2': ['3.pdf', '4.pdf'],
+    'Group 3': ['5.pdf'],
+};
+
 // Middleware
 app.use(cors());
 app.use(morgan('dev'));
 app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
-
-// Serve static files from 'public' directory
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Sample data for document groups
-// In a real application, this would come from a database
-const documentGroups = [
-    {
-        groupId: 'group1',
-        groupName: 'Group1 Documents',
-        documents: [
-            { documentId: 'doc1', fileName: '1.pdf', title: 'Main Contract' },
-            { documentId: 'doc2', fileName: '2.pdf', title: 'Terms and Conditions' },
-        ],
-    },
-    {
-        groupId: 'group2',
-        groupName: 'Group2 Documents',
-        documents: [
-            { documentId: 'doc3', fileName: '3.pdf', title: 'Agreement Document' },
-            { documentId: 'doc4', fileName: '4.pdf', title: 'Appendix' },
-        ],
-    },
-    {
-        groupId: 'group3',
-        groupName: 'Group3- Final Documents',
-        documents: [{ documentId: 'doc5', fileName: '5.pdf', title: 'Final Document' }],
-    },
-];
+// Serve PDF files grouped into sections
+app.get('/api/pdfs', (req, res) => {
+    try {
+        const pdfDir = path.join(__dirname, 'pdfs');
 
-// API endpoint to get all document groups
-app.get('/api/document-groups', (req, res) => {
-    res.json(documentGroups);
-});
-
-// API endpoint to get a specific group by ID
-app.get('/api/document-groups/:groupId', (req, res) => {
-    const { groupId } = req.params;
-    const group = documentGroups.find((g) => g.groupId === groupId);
-
-    if (!group) {
-        return res.status(404).json({ message: 'Group not found' });
-    }
-
-    res.json(group);
-});
-
-// API endpoint to get a specific document by ID
-app.get('/api/documents/:documentId', (req, res) => {
-    const { documentId } = req.params;
-
-    // Find the document in all groups
-    for (const group of documentGroups) {
-        const document = group.documents.find((doc) => doc.documentId === documentId);
-        if (document) {
-            return res.json(document);
+        // Check if the pdfs directory exists
+        if (!fs.existsSync(pdfDir)) {
+            console.error(`PDF directory not found: ${pdfDir}`);
+            return res.status(500).json({
+                error: 'PDF directory not found',
+                message: 'The pdfs directory does not exist',
+            });
         }
-    }
 
-    res.status(404).json({ message: 'Document not found' });
+        // Get list of PDF files
+        const pdfFiles = fs.readdirSync(pdfDir);
+        console.log(`Found ${pdfFiles.length} files in pdfs directory`);
+
+        // Filter PDF files
+        const availableFiles = new Set(pdfFiles.filter((file) => file.endsWith('.pdf')));
+
+        // Create groups with file details
+        const groups = Object.entries(pdfGroups).map(([groupName, groupFiles]) => {
+            // Filter to only include files that actually exist
+            const files = groupFiles
+                .filter((file) => availableFiles.has(file))
+                .map((file) => ({
+                    id: path.basename(file, '.pdf'),
+                    name: file,
+                    url: `/api/pdf/${file}`,
+                }));
+
+            return {
+                name: groupName,
+                files: files,
+            };
+        });
+
+        res.json({ groups });
+    } catch (error) {
+        console.error('Error getting PDF list:', error);
+        res.status(500).json({ error: 'Failed to get PDF list' });
+    }
 });
 
-// API endpoint to serve PDF files
-app.get('/api/pdf/:fileName', (req, res) => {
-    const { fileName } = req.params;
-    const filePath = path.join(__dirname, 'pdfs', fileName);
+// Serve a specific PDF file
+app.get('/api/pdf/:filename', (req, res) => {
+    try {
+        const filename = req.params.filename;
+        const filePath = path.join(__dirname, 'pdfs', filename);
 
-    // Check if file exists
-    if (fs.existsSync(filePath)) {
-        // Set appropriate headers
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).json({ error: 'PDF not found' });
+        }
+
+        // Set proper content type for PDF
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
-
-        // Add cache headers to improve performance
-        res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
-
-        // Create read stream and pipe to response
+        // Use stream to avoid loading large files entirely into memory
         const fileStream = fs.createReadStream(filePath);
         fileStream.pipe(res);
-    } else {
-        res.status(404).send('PDF file not found');
+    } catch (error) {
+        console.error('Error serving PDF:', error);
+        res.status(500).json({ error: 'Failed to serve PDF' });
     }
 });
 
-// Mock API endpoint for document signing
-app.post('/api/sign', (req, res) => {
-    const { groupIds } = req.body;
+// Record user consent
+app.post('/api/consent', (req, res) => {
+    try {
+        const consentData = req.body;
+        const timestamp = new Date().toISOString();
 
-    if (!groupIds || !Array.isArray(groupIds) || groupIds.length === 0) {
-        return res.status(400).json({ success: false, message: 'No document groups specified' });
+        // Log the consent data
+        console.log(`Consent recorded at ${timestamp}:`, consentData);
+
+        // In a real application, you would store this in a database
+        // For now, we'll write it to a file
+        const consentLogDir = path.join(__dirname, 'consent_logs');
+
+        // Ensure the consent logs directory exists
+        if (!fs.existsSync(consentLogDir)) {
+            fs.mkdirSync(consentLogDir, { recursive: true });
+        }
+
+        const logFileName = `consent_${timestamp.replace(/[:.]/g, '-')}.json`;
+        const logFilePath = path.join(consentLogDir, logFileName);
+
+        // Write consent data to file
+        fs.writeFileSync(logFilePath, JSON.stringify({ ...consentData, serverTimestamp: timestamp }, null, 2));
+
+        res.status(200).json({
+            message: 'Consent recorded successfully',
+            timestamp: timestamp,
+        });
+    } catch (error) {
+        console.error('Error recording consent:', error);
+        res.status(500).json({ error: 'Failed to record consent' });
     }
-
-    // In a real application, this would perform actual signing logic
-    // For now, we'll just return a success message
-    res.json({
-        success: true,
-        message: 'Documents signed successfully',
-        signedAt: new Date().toISOString(),
-        signedGroups: groupIds,
-    });
 });
 
-// Serve the main HTML file for any other route
-app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-// Create necessary directories if they don't exist
-const dirPaths = ['pdfs', 'public'];
-dirPaths.forEach((dir) => {
-    const dirPath = path.join(__dirname, dir);
-    if (!fs.existsSync(dirPath)) {
-        fs.mkdirSync(dirPath, { recursive: true });
-    }
-});
-
-// Start the server
+// Start server
 app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
 });
